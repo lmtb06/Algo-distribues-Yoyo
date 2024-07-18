@@ -1,0 +1,293 @@
+import sys, random
+from collections import Counter
+import time
+from enum import Enum
+
+class ChangementCategorie(Enum):
+    sortant_vers_entrant = 1
+    entrant_vers_sortant = 2
+    supprimer_des_entrant = 3
+    supprimer_des_sortant = 4
+
+class Agent(process):
+
+    def setup(id, voisins_entrants, voisins_sortants):
+        # state: unknown, source, internal, sink
+        self.idf = id
+        self.state = 'unknown'
+        self.voisins_entrants = voisins_entrants
+        self.voisins_sortants = voisins_sortants
+        self.changementCategories = {}
+        self.idReceived = {}
+        self.answerReceived = {}
+        self.compteurReceptionId = 0
+        self.compteurReceptionReponses = 0
+        recomputeState()
+
+    def recomputeState():
+        changerCategorieNoeud(changementCategories)
+        self.changementCategories.clear()
+        self.idReceived.clear()
+        self.answerReceived.clear()
+        self.compteurReceptionId = 0
+        self.compteurReceptionReponses = 0
+
+        if len(self.voisins_entrants) == 0 and len(self.voisins_sortants) > 0:
+            self.state = 'source'
+        elif len(self.voisins_entrants) > 0 and len(self.voisins_sortants) == 0:
+            self.state = 'sink'
+        elif len(self.voisins_entrants) > 0 and len(self.voisins_sortants) > 0:
+            self.state = 'internal'
+        elif len(self.voisins_entrants) == 0 and len(self.voisins_sortants) == 0:
+            output(f'{self} {self.state} ({self.idf}) gagnant')
+            exit(0)
+
+    def changerCategorieNoeud(nodes:dict[Agent, ChangementCategorie]):
+        """
+        Change la catégorie d'un noeud (voisins entrants ou sortants) suivant les changements spécifiés dans nodes
+        """
+        for node, category in nodes.items():
+            if category == ChangementCategorie.sortant_vers_entrant:
+                self.voisins_sortants.discard(node)
+                self.voisins_entrants.add(node)
+            elif category == ChangementCategorie.entrant_vers_sortant:
+                self.voisins_entrants.discard(node)
+                self.voisins_sortants.add(node)
+            elif category == ChangementCategorie.supprimer_des_entrant:
+                self.voisins_entrants.discard(node)
+            elif category == ChangementCategorie.supprimer_des_sortant:
+                self.voisins_sortants.discard(node)
+
+
+    def getMinimumIdReceived():
+        """
+        Retourne la valeur minimale reçue
+        """
+        return min(key[0] for key in self.idReceived.values())
+    
+    def calculerCoupure():
+        """
+        à chaque voisin entrant, on associe un booléen qui indique si on doit couper la connexion avec ce voisin ou non
+        """
+        couper = {}
+        valeurs_recues = Counter(valeur[0] for valeur in self.idReceived.values())
+        for voisin, (valeur, _) in sorted(self.idReceived.items(), key=lambda x: x[1][1]):
+            if valeurs_recues[valeur] > 1:
+                valeurs_recues[valeur] -= 1
+                couper[voisin] = True
+            else:
+                couper[voisin] = False
+        return couper
+
+    def sendId(id, to):
+        """
+        Envoie l'id à un voisin (phase yo)
+        """
+        send(('id', id), to=to)
+    
+    def sendAnswer(answer, to, couper=False):
+        """
+        Envoie la réponse à un voisin (oui ou non) (phase -yo)
+        """
+        if answer == 'no' and to in self.voisins_entrants:
+            changementCategories[to] = ChangementCategorie.entrant_vers_sortant
+            # output(f'{self} {self.state} ({self.idf}) changement de catégorie de {to} de entrant à sortant')
+        if couper:
+            changementCategories[to] = ChangementCategorie.supprimer_des_entrant
+            # output(f'{self} {self.state} ({self.idf}) coupure de {to}')
+
+        send(('answer', answer, 'couper', couper), to=to)
+
+    def receive(msg=('id', id), from_=origin):
+        # Ici j'ai ajouté un compteur pour pouvoir ordonner les messages reçus
+        self.idReceived[origin] = (id, self.compteurReceptionId)
+        self.compteurReceptionId += 1
+
+    def receive(msg=('answer', answer, 'couper', couper), from_=origin):
+        # Ici j'ai ajouté un compteur pour pouvoir ordonner les messages reçus
+        self.answerReceived[origin] = (answer, self.compteurReceptionReponses)
+        self.compteurReceptionReponses += 1
+
+        if answer == 'no' and origin in self.voisins_sortants:
+            changementCategories[origin] = ChangementCategorie.sortant_vers_entrant
+        if couper:
+            changementCategories[origin] = ChangementCategorie.supprimer_des_sortant
+            
+
+    def yoSource():
+        # Les sources envoient leur id à tous leurs voisins sortants
+        sendId(self.idf, to=self.voisins_sortants)
+
+    def yoSink():
+        # On attend de recevoir les valeurs de tous les voisins entrants
+        await(len(self.idReceived) == len(self.voisins_entrants))
+
+    def yoInternal():
+        # On attend de recevoir les valeurs de tous les voisins entrants
+        await(len(self.idReceived) == len(self.voisins_entrants))
+
+        # On envoie la valeur minimale à tous les voisins sortants
+        minVal = getMinimumIdReceived()
+        for id in self.voisins_sortants:
+            sendId(minVal, to=id)
+
+    def _yoSource():
+        # Attendre de recevoir les messages de tous ses voisins sortants mais n'envoie rien
+        await(len(self.answerReceived) == len(self.voisins_sortants))
+
+    def _yoSink():
+        if len(self.voisins_entrants) == 1: # Si on a un seul voisin entrant, on envoie yes à ce voisin et on coupe
+            for id in self.voisins_entrants:
+                sendAnswer(answer='yes', to=id, couper=True)
+                output(f'coupure de {self.idf}')
+                exit(0)
+        else:
+            couper = calculerCoupure()
+            minVal = getMinimumIdReceived()
+            for id in self.voisins_entrants:
+                # On envoie yes à tous les voisins entrants qui ont envoyé la valeur minimale et no aux autres
+                val = self.idReceived[id][0]
+                if val == minVal:
+                    sendAnswer(answer='yes', to=id, couper=couper[id])
+                else:
+                    sendAnswer(answer='no', to=id, couper=couper[id])
+            
+
+    def _yoInternal():
+        # On attend de recevoir les réponses de tous les voisins sortants
+        await(len(self.answerReceived) == len(self.voisins_sortants))
+        couper = calculerCoupure()
+
+        # Si on a reçu au moins une réponse no, on envoie no à tous les voisins entrants
+        if any([r == 'no' for r in self.answerReceived.values()]):
+            for id in self.voisins_entrants:
+                sendAnswer(answer='no', to=id, couper=couper[id])
+        else :
+        # Sinon si on a reçu que des yes, on envoie yes à tous les voisins entrants qui ont envoyé la valeur minimale et no aux autres
+            minVal = getMinimumIdReceived()
+            for id in self.voisins_entrants:
+                val = self.idReceived[id][0]
+                if val == minVal:
+                    sendAnswer(answer='yes', to=id, couper=couper[id])
+                else:
+                    sendAnswer(answer='no', to=id, couper=couper[id])
+
+    def run():
+        iteration = 0
+        while True:
+            recomputeState()
+            output(f'{self.idf} ({self.state}) : itération {iteration}')
+            # Phase Yo-
+            if self.state == 'source':
+                yoSource()
+            elif self.state == 'sink': 
+                yoSink()
+            elif  self.state == 'internal':
+                yoInternal()
+
+
+            # Phase -Yo
+            if self.state == 'source':
+                _yoSource()
+            elif self.state == 'sink':
+                _yoSink()
+            elif self.state == 'internal':
+                _yoInternal()
+            iteration += 1
+            time.sleep(0.01) # Pour éviter les deadlocks j'ai ajouté un sleep, j'ai essayé d'autres solutions mais ça n'a pas marché
+    
+
+def main():
+    n = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    m = int(sys.argv[2]) if len(sys.argv) > 2 else 2*n
+    if n > 50:
+       n = 50
+    if m > 2*n:
+       m = 2*n
+    if n == 0:
+       # default configuration from slides
+       ids = {2,3,4,5,7,11,12,14,20,31,41}
+       edges = {(2,31), (3,11), (3,12), (3,14), (4,14), (4,20), (5,11), (5,12), (5,20),
+                (7,20), (7,31), (11,12), (12,20), (20,41)}
+    else:
+       # first build a skeleton consisting of a connected acyclic graph of n nodes
+       # the nodes are just numbered from 0 to n-1
+       # we use a union-find structure consisting of a table reps
+       # that stores the representative of each node, chosen as the
+       # highest-numbered node in the same connected component, and
+       # a table comps that stores the set of nodes that make up the
+       # component of each representative
+       nodes = set(range(n))
+       links = set()
+       reps = [k for k in range(n)]
+       comps = [{k} for k in range(n)]
+       for k in range(n-1):
+           # find the representative of node k
+           rep = get_rep(reps, k)
+           # pick a source vertex in the component to which k belongs
+           src = random.choice(tuple(comps[rep]))
+           # pick a destination vertex from a different component
+           dst = random.choice(tuple(nodes - comps[rep]))
+           # add the link and update the union-find structure
+           links.add((src, dst))
+           union(src, dst, reps, comps)
+
+       # now complete the graph with m-(n-1) arbitrary links
+       nodeList = tuple(nodes)
+       for k in range(m+1-n):
+           while True:
+              src = random.choice(nodeList)
+              dst = random.choice(nodeList)
+              if not (src == dst or (src,dst) in links or (dst,src) in links):
+                 break
+           links.add((src,dst))
+
+       # create a list of n distinct random process ids
+       idList = []
+       for k in range(n):
+           # find a new id that doesn't exist yet
+           while True:
+              id = random.randint(1,100)
+              if not(id in idList):
+                 break
+           idList.append(id)
+       # now compute the set of ids and edges of the graph
+       ids = set(idList)
+       edges = {(idList[i], idList[j]) for (i,j) in links}
+
+    # print the graph before startup
+    output('input graph')
+    output(edges)
+    # associate a process with each id
+    procs = {}
+    for i in ids:
+        procs[i] = new(Agent)
+    for i in ids:
+        ins = {procs[k] for (j,k) in edges if i == j and k < i}.union(
+                {procs[k] for (k,j) in edges if i == j and k < i})
+        out = {procs[k] for (j,k) in edges if i == j and k > i}.union(
+                {procs[k] for (k,j) in edges if i == j and k > i})
+        setup(procs[i], (i, ins, out))
+    start(procs.values())
+
+
+# auxiliary functions for the union-find data structure used to build the tree
+
+# find the representative of node k (and update the reps structure as a side effect)
+def get_rep(reps, k):
+    rep = k
+    while not (rep == reps[rep]):
+       reps[rep] = reps[rep]
+       rep = reps[rep]
+    return rep
+
+# unify nodes i and j in the union-find structure
+def union(i, j, reps, comps):
+    repi = get_rep(reps, i)
+    repj = get_rep(reps, j)
+    if repi < repj:
+       reps[repi] = repj
+       comps[repj] = comps[repj].union(comps[repi])
+    elif repj < repi:
+       reps[repj] = repi
+       comps[repi] = comps[repi].union(comps[repj])
